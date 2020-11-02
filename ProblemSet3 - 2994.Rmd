@@ -1,0 +1,242 @@
+---
+title: "Prediction of US Popular Vote for 2020 Election"
+author: "Maxwell Garrett"
+date: "November 2nd 2020"
+header-includes:
+   - \usepackage{hanging}
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(knitr)
+setwd("C:/Users/Max/OneDrive - University of Toronto/4th Year/Semester 1/STA304/Problem Set 3")
+# Loading in the cleaned survey Data
+survey_data <- read_csv("./outputs/survey_data.csv")
+
+# Loading in the cleaned census Data
+census_data <- read_csv("./outputs/census_data.csv")
+
+#electoral vote data
+electoral_data <- read_csv("./outputs/electoralvotes.csv")
+
+```
+
+# Model
+
+We are interested in predicting the popular vote and electoral vote outcome for the 2020 US election. We will model this result below, using two seperate models: one model with votes for Biden as the observed outcome (coding the observed value as 1 if the vote was for Biden, and 0 otherwise), and the other model with votes for Trump as the observed outcome. We will use post-stratification to ensure the model is representative of the US population. We will discuss 2 models throughout, model 1 which has the response variable vote_trump and model 2 which has the response variable vote_biden.
+
+
+## Model Specifics
+We will be using a logistic regression model to model the log-odds of voting for Donald Trump. We will also use an similar model with the same predictors to model the log-odds of voting for Joe Biden. We will use the following variables as predictors in the models: age (a numeric variable), gender (a categorical variable), white (a categorical variable), and state (a categorical variable). The logistic regression model equation is below:
+
+$$ log(\frac{p}{1-p}) = \beta_0+\beta_1  x_{age} + \beta_2  x_{gend=M}+\beta_3  x_{st=AL} + ... + \beta_{53}  x_{st=WY} + \beta_{54}x_{white=white} + \epsilon$$
+
+Where $p$ represents the proportion of voters who will vote for Donald Trump in model 1, and Joe Biden in model 2. $\beta_0$ is the intercept of the model, and is the log-odds of voting Trump/Biden (dependent on model) at age of 0, gender female, non-white race individual and lives in state Alaska. $\beta_1$ represents the change in log-odds per unit of age. $\beta_2$ represents the change in log-odds if an individual is male. $\beta_3$ to $\beta_{53}$ represent the change in log-odds if an individual is from a given state compared to the reference state of Alaska. $\beta_{54}$ represents the change in log-odds if an individual's race is white, compared to all other races (classified as non-white).
+
+```{r, include=FALSE}
+
+# Creating the Model
+model <- glm(vote_trump ~ age + gender + state + white,
+            data=survey_data, family= "binomial")
+
+# Model Results (to Report in Results section)
+# summary(model)
+# OR
+#broom::tidy(model)
+
+```
+
+```{r, include=FALSE}
+
+# Creating the Model
+model_bid <- glm(vote_biden ~ age + gender + state + white,
+            data=survey_data, family= "binomial")
+
+# Model Results (to Report in Results section)
+# summary(model)
+# OR
+#broom::tidy(model)
+
+```
+
+## Post-Stratification 
+
+We will use our above models to estimate the proportion of voters who will vote for Donald Trump, and then Joe Biden. We will create a table, with each cell showing the estimated proportion of interest (i.e. either proportion of voters for Trump or proportion of voters for Biden) for each combination of age, gender, state, and race (white vs non-white). These proportions are estimated using the models defined above, and plugging in specific values for the predictors age, gender, state, and white. We will then use the estimated probability in each cell, and weight it by the proportion of the population that cell represents using census data. Finally, we will sum all weighted values and divide by the total population size (represented by all cells combined).
+
+Secondly, We will use the models to estimate the percentage of electoral votes each candidate will receive. We will do this by estimating the proportion of each cell that will vote for Biden or Trump. Then, we group all cells by their states and sum all estimated proportions for each state. Then, we will divide each proportion by the sum of population in each state. If the percent of population in a state is greater than $50\%$, We will add that state's number of electoral votes to a sum. We will divide the sum of electoral votes won by the total electoral votes in the US. The final result is the percent of electoral votes expected to be won by a candidate. 
+
+```{r, include=FALSE}
+copy_census <- tibble(census_data)
+pop_vote_results <- tibble(candidate = character(), popular_vote = numeric(), lower_popular_vote = numeric(), upper_popular_vote = numeric())
+elec_vote_results <- tibble(candidate = character(), lower_electoral_vote = numeric(),
+                            mid_electoral_vote = numeric(),
+                            upper_electoral_vote = numeric())
+# Here I will perform the post-stratification calculation
+copy_census$estimate <-
+  (model %>%
+  predict(newdata = copy_census, type="response", se.fit=TRUE))$fit
+
+copy_census$estimate_se <-
+  (model %>%
+  predict(newdata = copy_census, type="response", se.fit=TRUE))$se.fit
+
+popvote_trump <- copy_census %>%
+  mutate(alp_predict_prop = estimate*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+
+popvote_trump_upper <- copy_census %>%
+  mutate(alp_predict_prop = (estimate + 1.96*estimate_se )*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+
+popvote_trump_lower <- copy_census %>%
+  mutate(alp_predict_prop = (estimate - 1.96*estimate_se )*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+
+pop_vote_results <- pop_vote_results %>% add_row(candidate = "Donald Trump", popular_vote = popvote_trump$alp_predict[1], lower_popular_vote = popvote_trump_lower$alp_predict[1],
+            upper_popular_vote = popvote_trump_upper$alp_predict[1])
+
+elecvote_trump_upper <- copy_census %>%
+  mutate(alp_predict_prop = (1.96*estimate_se + estimate)*n) %>%
+  group_by(state) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n)) %>%
+  merge(electoral_data,by="state") %>%
+  mutate(won_votes = ifelse(alp_predict > 0.5,votes,0)) %>%
+  summarise(percent_electoral = sum(won_votes)/sum(votes))
+
+elecvote_trump_lower <- copy_census %>%
+  mutate(alp_predict_prop = ( estimate - 1.96*estimate_se)*n) %>%
+  group_by(state) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n)) %>%
+  merge(electoral_data,by="state") %>%
+  mutate(won_votes = ifelse(alp_predict > 0.5,votes,0)) %>%
+  summarise(percent_electoral = sum(won_votes)/sum(votes))
+
+elecvote_trump_mid <- copy_census %>%
+  mutate(alp_predict_prop = ( estimate)*n) %>%
+  group_by(state) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n)) %>%
+  merge(electoral_data,by="state") %>%
+  mutate(won_votes = ifelse(alp_predict > 0.5,votes,0)) %>%
+  summarise(percent_electoral = sum(won_votes)/sum(votes))
+
+elec_vote_results <- elec_vote_results %>% add_row(candidate = "Donald Trump", lower_electoral_vote = elecvote_trump_lower$percent_electoral[1], mid_electoral_vote = elecvote_trump_mid$percent_electoral[1], upper_electoral_vote = elecvote_trump_upper$percent_electoral[1])
+```
+
+```{r, include=FALSE}
+copy_census_2 <- tibble(census_data)
+# Here I will perform the post-stratification calculation
+copy_census_2$estimate <-
+  (model_bid %>%
+  predict(newdata = copy_census_2, type="response", se.fit=TRUE))$fit
+
+copy_census_2$estimate_se <-
+  (model_bid %>%
+  predict(newdata = copy_census_2, type="response", se.fit=TRUE))$se.fit
+
+popvote_biden <- copy_census_2 %>%
+  mutate(alp_predict_prop = estimate*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+
+popvote_biden_upper <- copy_census_2 %>%
+  mutate(alp_predict_prop = (1.96*estimate_se + estimate)*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+
+popvote_biden_lower <- copy_census_2 %>%
+  mutate(alp_predict_prop = (estimate - 1.96*estimate_se )*n) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n))
+
+pop_vote_results <- pop_vote_results %>% add_row(candidate = "Joe Biden", popular_vote = popvote_biden$alp_predict[1], lower_popular_vote = popvote_biden_lower$alp_predict[1],
+               upper_popular_vote = popvote_biden_upper$alp_predict[1])
+
+elecvote_biden_upper <- copy_census_2 %>%
+  mutate(alp_predict_prop = (1.96*estimate_se + estimate)*n) %>%
+  group_by(state) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n)) %>%
+  merge(electoral_data,by="state") %>%
+  mutate(won_votes = ifelse(alp_predict > 0.5,votes,0)) %>%
+  summarise(percent_electoral = sum(won_votes)/sum(votes))
+
+elecvote_biden_lower <- copy_census_2 %>%
+  mutate(alp_predict_prop = (estimate - 1.96*estimate_se )*n) %>%
+  group_by(state) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n)) %>%
+  merge(electoral_data,by="state") %>%
+  mutate(won_votes = ifelse(alp_predict > 0.5,votes,0)) %>%
+  summarise(percent_electoral = sum(won_votes)/sum(votes))
+
+elecvote_biden_mid <- copy_census_2 %>%
+  mutate(alp_predict_prop = (estimate )*n) %>%
+  group_by(state) %>%
+  summarise(alp_predict = sum(alp_predict_prop)/sum(n)) %>%
+  merge(electoral_data,by="state") %>%
+  mutate(won_votes = ifelse(alp_predict > 0.5,votes,0)) %>%
+  summarise(percent_electoral = sum(won_votes)/sum(votes))
+
+elec_vote_results <- elec_vote_results %>% add_row(candidate = "Joe Biden",
+                    lower_electoral_vote = elecvote_biden_lower$percent_electoral[1],
+                    mid_electoral_vote = elecvote_biden_mid$percent_electoral[1],
+                    upper_electoral_vote = elecvote_biden_upper$percent_electoral[1])
+```
+
+# Results
+
+\subsection*{Table 1: Popular vote predictions for Biden and Trump}
+```{r, warning=FALSE,message=FALSE}
+kable(pop_vote_results)
+```
+In table 1, we see that model 1, modeling vote_trump, predicts Trump receiving $40.31\%$ of the popular vote. We also see that model 2, modeling vote_biden, predicts Biden receiving $41.47\%$ of the popular vote. We as well have that Trump's popular vote is between $32.40\%$ and $48.23\%$ with $95\%$ confidence. Biden's popular vote is between $33.53\%$ and $49.40\%$ with $95\%$ confidence
+
+\subsection*{Table 2: Electoral vote predictions for Biden and Trump}
+```{r, warning=FALSE,message=FALSE}
+kable(elec_vote_results)
+```
+In table 2, we see that model 1, modeling vote_trump, predicts Trump receiving $7.06\%$ of the electoral vote. The upper and lower bounds of a $95\%$ confidence interval around this estimate are also included. The upper bound is $48.00\%$ and the lower bound is $0.00\%$.
+
+
+We also see that model 2, modeling vote_biden, predicts Biden receiving $6.51\%$ of the electoral vote. The upper and lower bounds of a $95\%$ confidence interval around this estimate are also included. The upper bound is $57.62\%$ and the lower bound is $0.557\%$.
+
+```{r, include=FALSE}
+#model %>% broom::tidy() %>% kable()
+```
+# Discussion
+
+Above, we created two logistic models, one representing the log-odds of Biden winning and the other Trump winning, and used these models to predict the proportions of subsets of the population voting for either candidate. We added these subsets of the population up and divided by the total population to estimate the popular vote for the United States, as a whole. We also estimate the confidence intervals of the percent of the electoral vote won by predicting the winner of the popular vote for each state using our models. We then add up the number of electoral votes won for a given state if the popular vote for that state indicates a given party receiving more than $50\%$ of the vote.
+
+We estimate Donald Trump receiving $40.31\%$ of the popular vote and Joe Biden receiving $41.47\%$ (table 1). We also find a $95\%$ confidence interval of the percent of electoral vote won by each candidate. We estimate Donald Trump receiving between $0\%$ to $48\%$ of the electoral vote with $95\%$ confidence. We also estimate Joe Biden receiving between $0.6\%$ to $57.62\%$ of the electoral vote with $95\%$ confidence. Based on the above results, we predict that Joe Biden will win the election because he is predicted to receive more of the popular vote, and the confidence interval of his electoral vote percent prediction includes a higher upper bound when compared with the confidence interval of Trump's electoral vote percent prediction (i.e. Trump's upper bund is below 50% whereas Biden's is above 50%).
+
+## Weaknesses
+
+One weakness of this study is that there is high variability in the estimates produced. This can be seen in the $95\%$ confidence intervals on the estimates displayed in table $1$ and $2$. We see that the confidence intervals overlap for each candidate. A solution to this could be to collect more survey data on the voting intentions of Americans to decrease the potential error associated with the data. Another weakness in the study is the modification of the race variable from a categorical variable with multiple values to a binary variable. This was done due to differences in how the census data reported race and how the survey data reported race. In the census data, respondents were allowed to select that they belonged to multiple races and other categories that were not present in the survey data. To combine the datasets together, race was simplified, resulting in lost information. To solve this issue, more work could be done in identifying which race categories correspond and collecting more complete race data related to voters.
+
+
+## Next Steps
+
+There are multiple possible avenues for future work on this analysis. We would likely benefit from a greater sample size in the survey data on voting intention. The greater sample size would help reduce error in the estimates. It would also be helpful in future to connect more variables between census data and survey data as this would help produce more subsets of the population for post-stratification. The additional predictor variables would also help remove some variation in the proportion estimates. It might also be helpful to see how closely the survey data from pre-election resembles the survey data collected from election day polls. It would help show us how accurate or inaccurate our collected voter data is.
+
+# References
+
+\begin{hangparas}{.25in}{1}
+Hadley Wickham and Evan Miller (2020). haven: Import and Export 'SPSS', 'Stata' and 'SAS' Files. R package version 2.3.1. https://CRAN.R-project.org/package=haven
+  
+Rohan Alexander, and Sam Caetano (2020). Survey and Strat Cleaning Code. Retrieved October 31, 2020.
+
+Tausanovitch, Chris and Lynn Vavreck. 2020. Democracy Fund + UCLA Nationscape, October 10-17, 2019 (version 20200814). Retrieved from [URL].
+
+Steven Ruggles, Sarah Flood, Ronald Goeken, Josiah Grover, Erin Meyer, Jose Pacas and   Matthew Sobek. IPUMS USA: Version 10.0 [dataset]. Minneapolis, MN: IPUMS, 2020.
+https://doi.org/10.18128/D010.V10.0
+
+United States Electoral College Votes by State. (2016). Retrieved November 01, 2020, from https://www.britannica.com/topic/United-States-Electoral-College-Votes-by-State-1787124
+
+Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software, 4(43), 1686, https://doi.org/10.21105/joss.01686
+
+Yihui Xie (2020). knitr: A General-Purpose Package for Dynamic Report Generation in R. R package version 1.29.
+
+Yihui Xie (2015) Dynamic Documents with R and knitr. 2nd edition. Chapman and Hall/CRC. ISBN 978-1498716963
+
+Yihui Xie (2014) knitr: A Comprehensive Tool for Reproducible Research in R. In Victoria Stodden, Friedrich Leisch and Roger D. Peng, editors, Implementing Reproducible Computational Research. Chapman and Hall/CRC. ISBN 978-1466561595
+\end{hangparas}
