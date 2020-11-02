@@ -1,5 +1,5 @@
 ---
-title: "Prediction of US Popular Vote for 2020 Election"
+title: "Predicting Joe Biden Winnig US Popular Vote for 2020 Election"
 author: "Maxwell Garrett"
 date: "November 2nd 2020"
 header-includes:
